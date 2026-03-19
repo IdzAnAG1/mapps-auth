@@ -1,0 +1,271 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mapps-auth
+
+jobs:
+  lint:
+    name: Lint & Vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -v -race -count=1 ./...
+
+  migrations-changed:
+    name: Detect migration changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for migration file changes
+        id: check
+        run: |
+          # Determine base commit depending on trigger type
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # First push to the branch — treat as changed to be safe
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "First push to branch, treating migrations as changed"
+            exit 0
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}" | grep '^internal/db/migrations/' || true)
+
+          if [ -n "$CHANGED" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Migration files changed:"
+            echo "$CHANGED"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No migration files changed"
+          fi
+
+  validate-migrations:
+    name: Validate migrations
+    needs: migrations-changed
+    if: needs.migrations-changed.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       mapps_auth_ci
+          POSTGRES_USER:     postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go (needed for goose install)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h localhost -p 5432 -U postgres; do
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+          echo "Postgres is ready"
+
+      - name: Run migrations
+        env:
+          GOOSE_DRIVER:   postgres
+          GOOSE_DBSTRING: "host=localhost port=5432 dbname=mapps_auth_ci user=postgres password=postgres sslmode=disable"
+        run: |
+          goose -dir ./internal/db/migrations up
+          echo "All migrations applied successfully"
+
+      - name: Verify schema
+        env:
+          PGPASSWORD: postgres
+        run: |
+          echo "── Tables ──────────────────────────────────────"
+          psql -h localhost -U postgres -d mapps_auth_ci -c "\dt"
+          echo "── users columns ────────────────────────────────"
+          psql -h localhost -U postgres -d mapps_auth_ci -c "\d users"
+          echo "── roles rows ───────────────────────────────────"
+          psql -h localhost -U postgres -d mapps_auth_ci -c "SELECT * FROM roles;"
+
+      - name: Rollback check (down → up)
+        env:
+          GOOSE_DRIVER:   postgres
+          GOOSE_DBSTRING: "host=localhost port=5432 dbname=mapps_auth_ci user=postgres password=postgres sslmode=disable"
+        run: |
+          goose -dir ./internal/db/migrations down-to 0
+          echo "Rollback to 0 succeeded"
+          goose -dir ./internal/db/migrations up
+          echo "Re-apply succeeded — migrations are idempotency-safe"
+
+  docker:
+    name: Build & Push image
+    needs: [lint, test, validate-migrations]
+    if: |
+      always()
+      && github.event_name == 'push'
+      && needs.lint.result             == 'success'
+      && needs.test.result             == 'success'
+      && (
+           needs.validate-migrations.result == 'success'
+        || needs.validate-migrations.result == 'skipped'
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (multi-platform emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # sha-<short commit> on every push
+            type=sha,prefix=sha-,format=short
+            # latest only on the default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context:    .
+          platforms:  linux/amd64,linux/arm64
+          push:       true
+          tags:       ${{ steps.meta.outputs.tags }}
+          labels:     ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+      - name: Image digest
+        run: echo "Pushed ${{ env.IMAGE_NAME }} with tags ${{ steps.meta.outputs.tags }}"
+
+  # ── 6. Deploy to self-hosted server ──────────────────────────────────────────
+  deploy:
+    name: Deploy to server
+    needs: docker
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:        ${{ secrets.SSH_HOST }}
+          port:        ${{ secrets.SSH_PORT }}
+          username:    ${{ secrets.SSH_USER }}
+          key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true   # abort on first failed command
+          script: |
+            set -euo pipefail
+
+            IMAGE="${{ env.IMAGE_NAME }}:latest"
+            CONTAINER="mapps-auth"
+            ENV_FILE="/opt/mapps/auth/mapps_auth.env"
+
+            echo "Pulling $IMAGE ..."
+            docker pull "$IMAGE"
+
+            echo "Stopping old container (if running) ..."
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm   "$CONTAINER" 2>/dev/null || true
+
+            echo "Starting new container ..."
+            docker run -d \
+              --name "$CONTAINER" \
+              --restart unless-stopped \
+              --env-file "$ENV_FILE" \
+              --network host \
+              "$IMAGE"
+
+            echo "Waiting for container to become healthy ..."
+            for i in $(seq 1 15); do
+              STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+              if [ "$STATUS" = "running" ]; then
+                echo "Container is running"
+                break
+              fi
+              if [ "$i" = "15" ]; then
+                echo "Container did not start in time"
+                docker logs "$CONTAINER" --tail 50
+                exit 1
+              fi
+              sleep 2
+            done
+
+            echo "Removing dangling images ..."
+            docker image prune -f
+
+            echo "Deploy complete. Container status:"
+            docker ps --filter "name=$CONTAINER" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
