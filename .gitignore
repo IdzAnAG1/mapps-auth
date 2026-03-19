@@ -1,0 +1,33 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Env / secrets
+*.env
+!*.env.example
+
+# Go build
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test
+*.test
+*.out
+coverage.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated proto (regenerate via: make buf_gen)
+generated/
+
+# sqlc generated (regenerate via: make sql_gen)
+# internal/db/gen/
