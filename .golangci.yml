@@ -1,0 +1,51 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck        # unchecked errors
+    - gosimple        # simplification suggestions
+    - govet           # go vet checks
+    - ineffassign     # assignments that are never used
+    - staticcheck     # static analysis
+    - unused          # unused code
+    - gofmt           # formatting
+    - goimports       # import ordering
+    - misspell        # spelling in comments/strings
+    - exhaustive      # missing switch cases on enums
+    - noctx           # http calls without context
+    - godot           # comments end with a period
+    - gosec           # security issues
+
+linters-settings:
+  gosec:
+    excludes:
+      - G115   # integer overflow: acceptable in our context
+
+  godot:
+    scope: declarations  # only exported declarations
+    capital: false
+
+  exhaustive:
+    default-signifies-exhaustive: true
+
+issues:
+  exclude-rules:
+    # Test files: relax several checks
+    - path: "_test\\.go"
+      linters:
+        - errcheck
+        - gosec
+
+    # Generated proto files: skip everything
+    - path: "generated/"
+      linters:
+        - all
+
+    # SQLC generated files
+    - path: "internal/db/gen/"
+      linters:
+        - all
