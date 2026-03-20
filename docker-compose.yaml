@@ -35,7 +35,7 @@ services:
       migrator:
         condition: service_completed_successfully
     env_file:
-      - $HOME/.env
+      - ./mapps_auth.env
     ports:
       - ${EXTERNAL_PORT}:${APP_CONTAINER_PORT}
 

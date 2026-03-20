@@ -23,16 +23,16 @@ jobs:
         run: curl -o ${HOME}/auth-docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/docker-compose.yaml
 
       - name: Drop oldest container
-        run: docker compose -f $HOME/auth-docker-compose.yml down
+        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml down
 
       - name: fetch new image
-        run : docker compose -f $HOME/auth-docker-compose.yml pull
+        run : docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml pull
 
       - name: up postrges container
-        run: docker compose -f $HOME/auth-docker-compose.yml up -d postgres
+        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up -d postgres
 
       - name: up migrator container
-        run: docker compose -f $HOME/auth-docker-compose.yml up migrator
+        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up migrator
 
       - name: up app container
-        run: docker compose -f $HOME/auth-docker-compose.yml up -d app
+        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up -d app
