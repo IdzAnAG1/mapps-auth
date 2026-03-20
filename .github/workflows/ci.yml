@@ -1,4 +1,4 @@
-name: CI/CD
+name: CI
 
 on:
   push:
@@ -211,61 +211,3 @@ jobs:
       - name: Image digest
         run: echo "Pushed ${{ env.IMAGE_NAME }} with tags ${{ steps.meta.outputs.tags }}"
 
-  # ── 6. Deploy to self-hosted server ──────────────────────────────────────────
-  deploy:
-    name: Deploy to server
-    needs: docker
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host:        ${{ secrets.SSH_HOST }}
-          port:        ${{ secrets.SSH_PORT }}
-          username:    ${{ secrets.SSH_USER }}
-          key:         ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true   # abort on first failed command
-          script: |
-            set -euo pipefail
-
-            IMAGE="${{ env.IMAGE_NAME }}:latest"
-            CONTAINER="mapps-auth"
-            ENV_FILE="/opt/mapps/auth/mapps_auth.env"
-
-            echo "Pulling $IMAGE ..."
-            docker pull "$IMAGE"
-
-            echo "Stopping old container (if running) ..."
-            docker stop "$CONTAINER" 2>/dev/null || true
-            docker rm   "$CONTAINER" 2>/dev/null || true
-
-            echo "Starting new container ..."
-            docker run -d \
-              --name "$CONTAINER" \
-              --restart unless-stopped \
-              --env-file "$ENV_FILE" \
-              --network host \
-              "$IMAGE"
-
-            echo "Waiting for container to become healthy ..."
-            for i in $(seq 1 15); do
-              STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
-              if [ "$STATUS" = "running" ]; then
-                echo "Container is running"
-                break
-              fi
-              if [ "$i" = "15" ]; then
-                echo "Container did not start in time"
-                docker logs "$CONTAINER" --tail 50
-                exit 1
-              fi
-              sleep 2
-            done
-
-            echo "Removing dangling images ..."
-            docker image prune -f
-
-            echo "Deploy complete. Container status:"
-            docker ps --filter "name=$CONTAINER" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
