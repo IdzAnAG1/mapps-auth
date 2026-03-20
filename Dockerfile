@@ -6,9 +6,9 @@ COPY . /app
 
 WORKDIR /app
 
-RUN GOOS="linux" GOARCH="arm64" CGO_ENABLED=0 go build -o mappsAuth ./cmd/main/main.go
+RUN GOOS="linux" GOARCH="amd64" CGO_ENABLED=0 go build -o mappsAuth ./cmd/main/main.go
 
-FROM --platform=linux/arm64 alpine
+FROM --platform=linux/amd64 alpine
 
 COPY --from=build /app/mappsAuth /app/mappsAuth
 
