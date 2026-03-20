@@ -26,8 +26,5 @@ coverage.*
 .DS_Store
 Thumbs.db
 
-# Generated proto (regenerate via: make buf_gen)
-generated/
-
 # sqlc generated (regenerate via: make sql_gen)
 # internal/db/gen/
