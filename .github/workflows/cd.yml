@@ -13,26 +13,26 @@ jobs:
       - name: Docker login
         run: echo ${{ secrets.DOCKER_AT }} | docker login -u ${{ secrets.DOCKER_LOGIN }} --password-stdin
 
-      - name: Create .env file
-        run: echo "${{secrets.ENV}}" > $HOME/.env
+      - name: Prepare deploy directory
+        run: mkdir -p $HOME/mapps/auth
 
-      - name: cp .env file into mapps_auth.env
-        run: cp $HOME/.env $HOME/mapps_auth.env
+      - name: Create env file
+        run: echo "${{ secrets.ENV }}" > $HOME/mapps/auth/mapps_auth.env
 
       - name: Download docker-compose.yml
-        run: curl -o ${HOME}/auth-docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/docker-compose.yaml
+        run: curl -o $HOME/mapps/auth/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/docker-compose.yaml
 
       - name: Drop oldest container
-        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml down
+        run: docker compose --project-name mapps-auth --env-file $HOME/mapps/auth/mapps_auth.env -f $HOME/mapps/auth/docker-compose.yml down
 
-      - name: fetch new image
-        run : docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml pull
+      - name: Fetch new image
+        run: docker compose --project-name mapps-auth --env-file $HOME/mapps/auth/mapps_auth.env -f $HOME/mapps/auth/docker-compose.yml pull
 
-      - name: up postrges container
-        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up -d postgres
+      - name: Up postgres container
+        run: docker compose --project-name mapps-auth --env-file $HOME/mapps/auth/mapps_auth.env -f $HOME/mapps/auth/docker-compose.yml up -d postgres
 
-      - name: up migrator container
-        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up migrator
+      - name: Up migrator container
+        run: docker compose --project-name mapps-auth --env-file $HOME/mapps/auth/mapps_auth.env -f $HOME/mapps/auth/docker-compose.yml up migrator
 
-      - name: up app container
-        run: docker compose --env-file $HOME/mapps_auth.env -f $HOME/auth-docker-compose.yml up -d app
+      - name: Up app container
+        run: docker compose --project-name mapps-auth --env-file $HOME/mapps/auth/mapps_auth.env -f $HOME/mapps/auth/docker-compose.yml up -d app
