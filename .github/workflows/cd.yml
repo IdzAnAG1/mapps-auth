@@ -16,8 +16,8 @@ jobs:
       - name: Create .env file
         run: echo "${{secrets.ENV}}" > $HOME/.env
 
-      - name: cp .env file into sc_auth.env
-        run: cp $HOME/.env $HOME/sc_auth.env
+      - name: cp .env file into mapps_auth.env
+        run: cp $HOME/.env $HOME/mapps_auth.env
 
       - name: Download docker-compose.yml
         run: curl -o ${HOME}/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/docker-compose.yaml

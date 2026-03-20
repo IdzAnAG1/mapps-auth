@@ -61,7 +61,7 @@ jobs:
 
   # Запуск Проверки миграций на тестовой бд
   migrations:
-    # if: needs.migrations_check.outputs.is_changed == 'true'
+    if: needs.migrations_check.outputs.is_changed == 'true'
     needs: [migrations_check]
     name: preparing migrations
     runs-on: ubuntu-latest
