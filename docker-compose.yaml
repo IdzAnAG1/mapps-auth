@@ -18,7 +18,7 @@ services:
       - postgres_mapps_auth_data:/var/lib/postgresql/data
 
   migrator:
-    image: ${DOCKER_LOGIN}/mapps-auth-migrator:latest
+    image: ${DOCKER_LOGIN}/mappsauth-migrator:latest
     container_name: mapps-auth-migrator
     depends_on:
       postgres:

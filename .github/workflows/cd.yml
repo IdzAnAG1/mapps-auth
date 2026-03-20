@@ -1,5 +1,4 @@
 name: CD
-
 on:
   workflow_run:
     workflows: ["CI"]
@@ -15,10 +14,10 @@ jobs:
         run: echo ${{ secrets.DOCKER_AT }} | docker login -u ${{ secrets.DOCKER_LOGIN }} --password-stdin
 
       - name: Create .env file
-        run: echo "${{ secrets.ENV }}" > $HOME/.env
+        run: echo "${{secrets.ENV}}" > $HOME/.env
 
-      - name: cp .env file into mapps_auth.env
-        run: cp $HOME/.env $HOME/mapps_auth.env
+      - name: cp .env file into sc_auth.env
+        run: cp $HOME/.env $HOME/sc_auth.env
 
       - name: Download docker-compose.yml
         run: curl -o ${HOME}/docker-compose.yml https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/docker-compose.yaml
@@ -26,14 +25,14 @@ jobs:
       - name: Drop oldest container
         run: docker compose -f $HOME/docker-compose.yml down
 
-      - name: Fetch new image
-        run: docker compose -f $HOME/docker-compose.yml pull
+      - name: fetch new image
+        run : docker compose -f $HOME/docker-compose.yml pull
 
-      - name: Up postgres container
+      - name: up postrges container
         run: docker compose -f $HOME/docker-compose.yml up -d postgres
 
-      - name: Up migrator container
+      - name: up migrator container
         run: docker compose -f $HOME/docker-compose.yml up migrator
 
-      - name: Up app container
+      - name: up app container
         run: docker compose -f $HOME/docker-compose.yml up -d app

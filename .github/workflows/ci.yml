@@ -1,213 +1,129 @@
 name: CI
-
 on:
   push:
-    branches: [main, master]
+    branches: [ main ]
   pull_request:
-    branches: [main, master]
+    branches: [ main ]
 
-env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mapps-auth
+permissions:
+  contents: read
 
 jobs:
-  lint:
-    name: Lint & Vet
+  # Проверка go-кода на написание стилистических и ошибок при компиляции
+  golangci:
+    name: lint
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: go vet
-        run: go vet ./...
+          go-version: stable
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
-          args: --timeout=5m
+          version: v2.10
 
-  test:
-    name: Tests
+  # Проверка работы сервиса внутреннеми тестами
+  gotest:
+    name: test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version: stable
 
-      - name: Run tests
-        run: go test -v -race -count=1 ./...
+      - name: test
+        run: go test -v ./...
 
-  migrations-changed:
-    name: Detect migration changes
-    runs-on: ubuntu-latest
+  # Проверка изменения миграций (Если изменений нет, то и запускать мигратора на проверку валидности SQL не имеет смысла)
+  migrations_check:
     outputs:
-      changed: ${{ steps.check.outputs.changed }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for migration file changes
-        id: check
-        run: |
-          # Determine base commit depending on trigger type
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-            # First push to the branch — treat as changed to be safe
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "First push to branch, treating migrations as changed"
-            exit 0
-          else
-            BASE="${{ github.event.before }}"
-          fi
-
-          CHANGED=$(git diff --name-only "$BASE" "${{ github.sha }}" | grep '^internal/db/migrations/' || true)
-
-          if [ -n "$CHANGED" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Migration files changed:"
-            echo "$CHANGED"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No migration files changed"
-          fi
-
-  validate-migrations:
-    name: Validate migrations
-    needs: migrations-changed
-    if: needs.migrations-changed.outputs.changed == 'true'
+      is_changed: ${{ steps.write_result.outputs.is_changed }}
+    needs: [golangci, gotest]
+    name: check migrations
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: '2'
 
+      - id: write_result
+        run : |
+          if git diff --name-only HEAD^ HEAD | grep -q 'internal/db/migrations'; then
+            echo "is_changed=true" >> $GITHUB_OUTPUT
+          else 
+            echo "is_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  # Запуск Проверки миграций на тестовой бд
+  migrations:
+    if: needs.migrations_check.outputs.is_changed == 'true'
+    needs: [migrations_check]
+    name: preparing migrations
+    runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.1-alpine
         env:
-          POSTGRES_DB:       mapps_auth_ci
-          POSTGRES_USER:     postgres
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=10
-
+        options:
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Setup Go (needed for goose install)
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version: stable
 
-      - name: Install goose
+      - name: install goose
         run: go install github.com/pressly/goose/v3/cmd/goose@latest
 
-      - name: Wait for Postgres
-        run: |
-          until pg_isready -h localhost -p 5432 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-          echo "Postgres is ready"
+      - name: validate migrations
+        run: goose -dir=./internal/db/migrations validate
 
-      - name: Run migrations
+      - name: migrate fix -> optimize labels
+        run: goose -dir=./internal/db/migrations fix
+
+      - name: test migration
+        run: goose -dir=./internal/db/migrations up
         env:
-          GOOSE_DRIVER:   postgres
-          GOOSE_DBSTRING: "host=localhost port=5432 dbname=mapps_auth_ci user=postgres password=postgres sslmode=disable"
-        run: |
-          goose -dir ./internal/db/migrations up
-          echo "All migrations applied successfully"
+          GOOSE_DRIVER: postgres
+          GOOSE_DBSTRING: ${{secrets.DB_STRING_TEST}}
 
-      - name: Verify schema
-        env:
-          PGPASSWORD: postgres
-        run: |
-          echo "── Tables ──────────────────────────────────────"
-          psql -h localhost -U postgres -d mapps_auth_ci -c "\dt"
-          echo "── users columns ────────────────────────────────"
-          psql -h localhost -U postgres -d mapps_auth_ci -c "\d users"
-          echo "── roles rows ───────────────────────────────────"
-          psql -h localhost -U postgres -d mapps_auth_ci -c "SELECT * FROM roles;"
+      - name: build migrator container
+        run: docker build -t ${{ secrets.DOCKER_LOGIN }}/mappsauth-migrator:latest . -f ./internal/db/Dockerfile
 
-      - name: Rollback check (down → up)
-        env:
-          GOOSE_DRIVER:   postgres
-          GOOSE_DBSTRING: "host=localhost port=5432 dbname=mapps_auth_ci user=postgres password=postgres sslmode=disable"
-        run: |
-          goose -dir ./internal/db/migrations down-to 0
-          echo "Rollback to 0 succeeded"
-          goose -dir ./internal/db/migrations up
-          echo "Re-apply succeeded — migrations are idempotency-safe"
+      - name: docker login
+        run: echo ${{ secrets.DOCKER_AT }} | docker login -u ${{ secrets.DOCKER_LOGIN }} --password-stdin
 
-  docker:
-    name: Build & Push image
-    needs: [lint, test, validate-migrations]
-    if: |
-      always()
-      && github.event_name == 'push'
-      && needs.lint.result             == 'success'
-      && needs.test.result             == 'success'
-      && (
-           needs.validate-migrations.result == 'success'
-        || needs.validate-migrations.result == 'skipped'
-      )
+      - name: docker push
+        run: docker push ${{ secrets.DOCKER_LOGIN }}/mappsauth-migrator:latest
+
+  # Сборка проекта в докер контейнер
+  build:
+    if: always() && (needs.migrations.result == 'success' || needs.migrations.result == 'skipped')
+    needs: [migrations]
+    name: building the binary
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Set up QEMU (multi-platform emulation)
-        uses: docker/setup-qemu-action@v3
+      - name: docker build
+        run: docker build -t ${{ secrets.DOCKER_LOGIN }}/mappsauth:latest .
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: docker login
+        run: echo ${{ secrets.DOCKER_AT }} | docker login -u ${{ secrets.DOCKER_LOGIN }} --password-stdin
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            # sha-<short commit> on every push
-            type=sha,prefix=sha-,format=short
-            # latest only on the default branch
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context:    .
-          platforms:  linux/amd64,linux/arm64
-          push:       true
-          tags:       ${{ steps.meta.outputs.tags }}
-          labels:     ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to:   type=gha,mode=max
-
-      - name: Image digest
-        run: echo "Pushed ${{ env.IMAGE_NAME }} with tags ${{ steps.meta.outputs.tags }}"
-
+      - name: docker push
+        run: docker push ${{ secrets.DOCKER_LOGIN }}/mappsauth:latest
